@@ -1,0 +1,37 @@
+[tool.poetry]
+name = "pdf-extractor"
+version = "0.1.0"
+description = "A professional PDF data extraction tool using GPT"
+authors = ["Nestor Urquiza <nestor.urquiza@gmail.com>"]
+readme = "README.md"
+packages = [{include = "pdf_extractor"}]
+
+[tool.poetry.dependencies]
+python = ">=3.8.1,<4.0"
+PyMuPDF = "^1.23.0"
+openai = "^1.0.0"
+pydantic = "^2.0.0"
+requests = "^2.31.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.4.0"
+pytest-cov = "^4.1.0"
+black = "^23.0.0"
+isort = "^5.12.0"
+flake8 = "^6.1.0"
+
+[tool.poetry.scripts]
+pdf-extractor = "pdf_extractor.cli:main"
+pdf-extractor-finetune = "pdf_extractor.cli_finetune:main"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.black]
+line-length = 88
+target-version = ['py38']
+
+[tool.isort]
+profile = "black"
+multi_line_output = 3

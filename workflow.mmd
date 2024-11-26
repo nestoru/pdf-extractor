@@ -1,0 +1,64 @@
+sequenceDiagram
+    participant Sources as External Sources
+    participant Collector as PDF Collector
+    participant UI as Web UI
+    participant Extract as Extraction Service
+    participant DB as Database
+    participant Review as Review System
+    participant Sync as Sync Service
+    participant Train as Training Service
+    participant Quality as Quality Gate
+    participant Deploy as Model Deployment
+    participant Alert as Alert System
+
+    rect rgb(200, 220, 240)
+        Note over Sources,DB: Collection & Initial Processing Phase
+        Sources->>Collector: Send PDFs
+        Collector->>Extract: Process new PDFs
+        Extract->>DB: Store extracted fields & raw text
+        Extract->>UI: Update UI with new documents
+    end
+
+    rect rgb(220, 240, 220)
+        Note over UI,Review: Review & Correction Phase
+        UI->>Review: User 1 reviews/corrects fields
+        Review->>DB: Save corrections
+        UI->>Review: User 2 approves extraction
+        Review->>DB: Mark as approved
+    end
+
+    rect rgb(240, 220, 220)
+        Note over DB,Sync: Synchronization Phase
+        Review->>Sync: Trigger sync for approved doc
+        Sync->>DB: Update sync status
+        alt Changes Made During Review
+            Review->>Train: Export training data
+            Train->>DB: Update training data count
+        end
+    end
+
+    rect rgb(220, 220, 240)
+        Note over Train,Deploy: Training & Quality Control Phase
+        alt Training Data Count > 100
+            Train->>Train: Trigger fine-tuning
+            Train->>Quality: Validate new model
+            Quality->>Quality: Compare with current model
+            
+            alt New Model Better
+                Quality->>Deploy: Deploy new model
+                Deploy->>Extract: Update active model
+                Deploy->>DB: Record model update
+            else New Model Worse
+                Quality->>Alert: Notify engineering
+                Alert->>Train: Pause automation
+                Note over Quality,Alert: Manual intervention required
+            end
+        end
+    end
+
+    rect rgb(240, 240, 220)
+        Note over Extract,DB: Continuous Operation
+        Note right of Extract: System continues with<br/>best performing model
+        Extract->>DB: Process new documents
+        DB->>UI: Update interface
+    end
