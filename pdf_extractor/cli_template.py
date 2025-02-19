@@ -14,7 +14,7 @@ def print_usage():
           "<document_type> <output_path>")
     print("\nExample:")
     print("  create-inference-template config.json "
-          "'https://sharepoint.com/.../fields.xlsx' 'CAS' ./templates/cas_template.json")
+          "'https://sharepoint.com/.../fields.xlsx' 'invoice' ./templates/invoice_template.json")
 
 def main():
     """Main entry point for creating inference templates."""

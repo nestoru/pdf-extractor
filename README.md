@@ -4,6 +4,35 @@ A professional PDF data extraction tool using GPT models with support for fine-t
 
 ![System Overview](production_pdf_data_extraction_system.png)
 
+# Quick POC
+Here is a quick POC that allows us to share this with business delivering a practical usable project.
+
++-------------------+       +-------------------+       +-------------------+
+|   SharePoint      |       |   Network Location|       |   Scheduler       |
+|-------------------|       |-------------------|       |-------------------|
+| - XLSX File       |<----->| - input_pdfs      |<----->| - OCR Job     |
+| - Extracted Data  |       | - ocred_pdfs      |<----->| - Extraction  |
+| - Approved Rows   |       | - output_pdfs     |<----->| - Sync Job    |
++-------------------+       | - input_jsons     |       +-------------------+
+                            +-------------------+
+                                    ^
+                                    |
+                                    v
+                            +-------------------+
+                            |   PDF Extractor   |
+                            |-------------------|
+                            | - OCR Tool        |
+                            | - Extraction Tool |
+                            +-------------------+
+                                    ^
+                                    |
+                                    v
+                            +-------------------+
+                            |   Training System|
+                            |-------------------|
+                            | - Model Training |
+                            +-------------------+
+
 ## Project structure
 ```
 ├── README.md
