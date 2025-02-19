@@ -38,8 +38,8 @@ class ExtractedField(BaseModel):
     """Represents an extracted field from the document."""
     key: str
     value: str
-    page: int
-    bbox: Tuple[float, float, float, float]
+    page: Optional[int] = None
+    bbox: Optional[Tuple[float, float, float, float]] = None
 
 class ExtractedFieldGPT(BaseModel):
     """Represents a field in the GPT response."""

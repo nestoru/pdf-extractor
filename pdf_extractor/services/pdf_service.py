@@ -137,3 +137,20 @@ class PDFService:
             
         finally:
             doc.close()
+
+    def extract_text(self, pdf_path: str) -> str:
+        """
+        Extract text content from PDF without position information.
+        
+        Args:
+            pdf_path: Path to the PDF file
+            
+        Returns:
+            str: Concatenated text content from all pages
+        """
+        doc = fitz.open(pdf_path)
+        text_content = []
+        for page in doc:
+            text_content.append(page.get_text())
+        doc.close()
+        return "\n".join(text_content)

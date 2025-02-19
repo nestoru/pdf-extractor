@@ -2,6 +2,7 @@
 .config.json
 
 # Virtual Environment
+myenv/
 venv/
 env/
 .venv/

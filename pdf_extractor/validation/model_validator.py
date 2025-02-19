@@ -4,7 +4,7 @@ import json
 from typing import Dict, List, Tuple
 import statistics
 from dataclasses import dataclass
-from pdf_extractor.config.extraction_config import ExtractionConfig
+import tempfile
 from pdf_extractor.core.extractor import PDFExtractor
 from pdf_extractor.utils.logging import get_logger
 
@@ -20,12 +20,13 @@ class ValidationMetrics:
     accuracy: float
     field_accuracies: Dict[str, float]
     error_examples: List[Dict]
-    
+    model_name: str
+
     def __str__(self) -> str:
         """Format metrics for display."""
         lines = [
-            "\nValidation Results:",
-            "-------------------",
+            "\nValidation Results for model: " + self.model_name,
+            "-" * (24 + len(self.model_name)),
             f"Total Samples: {self.total_samples}",
             f"Total Fields: {self.total_fields}",
             f"Correct Fields: {self.correct_fields}",
@@ -33,23 +34,23 @@ class ValidationMetrics:
             f"Overall Accuracy: {self.accuracy:.2%}",
             "\nField-level Accuracies:",
         ]
-        
+
         # Sort fields by accuracy descending
         sorted_fields = sorted(
             self.field_accuracies.items(),
             key=lambda x: x[1],
             reverse=True
         )
-        
+
         for field, acc in sorted_fields:
             lines.append(f"  {field}: {acc:.2%}")
-            
+
         if self.error_examples:
             lines.extend([
                 "\nError Examples:",
                 "--------------"
             ])
-            
+
             for ex in self.error_examples:
                 lines.extend([
                     f"\nDocument: {ex['document']}",
@@ -57,36 +58,39 @@ class ValidationMetrics:
                     f"Expected: {ex['expected']}",
                     f"Got: {ex['actual']}"
                 ])
-                
+
         return "\n".join(lines)
 
 class ModelValidator:
     """Validates model performance against ground truth data."""
-    
-    def __init__(self, config: ExtractionConfig):
-        """Initialize validator with configuration."""
-        self.config = config
-        self.extractor = PDFExtractor(config)
-        
+
+    def __init__(self, api_key: str, model_name: str):
+        """Initialize validator with API key and model name."""
+        self.api_key = api_key
+        self.model_name = model_name
+        self.extractor = PDFExtractor(api_key=api_key, model_name=model_name)
+
     def _compare_values(self, expected: str, actual: str) -> bool:
         """Compare expected and actual values with basic normalization."""
         def normalize(value: str) -> str:
             return value.lower().strip().replace(" ", "")
-            
+
         return normalize(str(expected)) == normalize(str(actual))
-        
+
     def validate_model(
         self,
         training_dir: Path,
+        template_path: str,
         error_limit: int = 5
     ) -> ValidationMetrics:
         """
         Validate model against training data.
-        
+
         Args:
-            training_dir: Directory containing training data
+            training_dir: Directory containing training data (PDFs and JSON ground truth)
+            template_path: Path to the fields template JSON file
             error_limit: Maximum number of error examples to collect
-            
+
         Returns:
             ValidationMetrics object with results
         """
@@ -95,46 +99,36 @@ class ModelValidator:
         correct_fields = 0
         field_results: Dict[str, List[bool]] = {}
         error_examples = []
-        
+
         # Process each JSON file in the training directory
         for json_path in training_dir.glob("*.json"):
-            # Skip template files
-            if json_path.name.endswith('.template.json'):
-                continue
-                
             try:
                 # Load ground truth data
                 with open(json_path, 'r', encoding='utf-8') as f:
                     ground_truth = json.load(f)
-                    
-                # Get corresponding PDF and template
-                pdf_path = json_path.with_suffix('.pdf')
-                template_path = json_path.with_suffix('.template.json')
-                
-                if not pdf_path.exists() or not template_path.exists():
-                    logger.warning(f"Missing PDF or template for {json_path}")
+
+                # Get corresponding PDF
+                pdf_path = json_path.parent / f"{json_path.stem}.pdf"
+
+                if not pdf_path.exists():
+                    logger.warning(f"PDF file not found: {pdf_path}")
                     continue
-                    
-                # Create temporary output paths
-                temp_output_pdf = json_path.with_name(f"temp_{json_path.stem}_output.pdf")
-                temp_output_json = json_path.with_name(f"temp_{json_path.stem}_output.json")
-                
-                # Run extraction
-                self.extractor.process_pdf(
-                    str(pdf_path),
-                    str(template_path),
-                    str(temp_output_pdf),
-                    str(temp_output_json)
-                )
-                
-                # Load results
-                with open(temp_output_json, 'r', encoding='utf-8') as f:
-                    extracted = json.load(f)
-                
-                # Clean up temporary files
-                temp_output_pdf.unlink(missing_ok=True)
-                temp_output_json.unlink(missing_ok=True)
-                
+
+                # Create a temporary file for the extraction output
+                with tempfile.NamedTemporaryFile(mode='w+', suffix='.json', delete=True) as tmp:
+                    # Run extraction in validation mode
+                    self.extractor.process_pdf(
+                        str(pdf_path),
+                        template_path,
+                        None,  # No output PDF needed for validation
+                        tmp.name,
+                        validation_mode=True
+                    )
+
+                    # Read back the results
+                    tmp.seek(0)
+                    extracted = json.load(tmp)
+
                 # Compare results
                 ground_truth_fields = {
                     f['key']: f['value'] for f in ground_truth['fields']
@@ -142,23 +136,23 @@ class ModelValidator:
                 extracted_fields = {
                     f['key']: f['value'] for f in extracted['fields']
                 }
-                
+
                 total_samples += 1
-                
+
                 # Check each field in ground truth
                 for key, expected in ground_truth_fields.items():
                     actual = extracted_fields.get(key, '')
                     is_correct = self._compare_values(expected, actual)
-                    
+
                     total_fields += 1
                     if is_correct:
                         correct_fields += 1
-                        
+
                     # Track field-level accuracy
                     if key not in field_results:
                         field_results[key] = []
                     field_results[key].append(is_correct)
-                    
+
                     # Collect error examples
                     if not is_correct and len(error_examples) < error_limit:
                         error_examples.append({
@@ -167,18 +161,18 @@ class ModelValidator:
                             'expected': expected,
                             'actual': actual
                         })
-                        
+
             except Exception as e:
                 logger.error(f"Error processing {json_path}: {str(e)}")
                 continue
-                
+
         # Calculate metrics
         accuracy = correct_fields / total_fields if total_fields > 0 else 0
         field_accuracies = {
             field: sum(results) / len(results)
             for field, results in field_results.items()
         }
-        
+
         return ValidationMetrics(
             total_samples=total_samples,
             total_fields=total_fields,
@@ -186,5 +180,6 @@ class ModelValidator:
             incorrect_fields=total_fields - correct_fields,
             accuracy=accuracy,
             field_accuracies=field_accuracies,
-            error_examples=error_examples
+            error_examples=error_examples,
+            model_name=self.model_name
         )
