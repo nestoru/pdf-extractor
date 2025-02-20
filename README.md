@@ -10,9 +10,9 @@ Here is a quick POC that allows us to share this with business delivering a prac
 +-------------------+       +-------------------+       +-------------------+
 |   SharePoint      |       |   Network Location|       |   Scheduler       |
 |-------------------|       |-------------------|       |-------------------|
-| - XLSX File       |<----->| - input_pdfs      |<----->| - OCR Job     |
-| - Extracted Data  |       | - ocred_pdfs      |<----->| - Extraction  |
-| - Approved Rows   |       | - output_pdfs     |<----->| - Sync Job    |
+| - XLSX File       |<----->| - input_pdfs      |<----->| - OCR Job         |
+| - Extracted Data  |       | - ocred_pdfs      |<----->| - Extraction      |
+| - Approved Rows   |       | - output_pdfs     |<----->| - Sync Job        |
 +-------------------+       | - input_jsons     |       +-------------------+
                             +-------------------+
                                     ^
@@ -28,9 +28,9 @@ Here is a quick POC that allows us to share this with business delivering a prac
                                     |
                                     v
                             +-------------------+
-                            |   Training System|
+                            |   Training System |
                             |-------------------|
-                            | - Model Training |
+                            | - Model Training  |
                             +-------------------+
 ```
 
