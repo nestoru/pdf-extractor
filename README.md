@@ -6,7 +6,7 @@ A professional PDF data extraction tool using GPT models with support for fine-t
 
 # Quick POC
 Here is a quick POC that allows us to share this with business delivering a practical usable project.
-
+```
 +-------------------+       +-------------------+       +-------------------+
 |   SharePoint      |       |   Network Location|       |   Scheduler       |
 |-------------------|       |-------------------|       |-------------------|
@@ -32,6 +32,7 @@ Here is a quick POC that allows us to share this with business delivering a prac
                             |-------------------|
                             | - Model Training |
                             +-------------------+
+```
 
 ## Project structure
 ```
