@@ -226,35 +226,19 @@ pdf-extractor-finetune status config.json job-123
 4. Start model training:
 ```bash
 pdf-extractor-finetune train config.json gpt-3.5-turbo-1106 <json_files_folder> <pdf_files_folder> my-custom-model [--dry-run]
-```
 
 5. Validate model performance:
 ```bash
-pdf-extractor-finetune validate <config.json> <openai_model_name> <json_files_folder> <pdf_files_folder> <template_path> [error_limit] [--dry-run]
+pdf-extractor-finetune validate <config.json> <training_dir> <model_name> <template_path> [error_limit]
 # Example:
-pdf-extractor-finetune validate config.json gpt-3.5-turbo-1106 ./json_dir ./pdf_dir ./my-template.json
-# Optional: Set error example limit and do a dry run
-pdf-extractor-finetune validate config.json gpt-3.5-turbo-1106 ./json_dir ./pdf_dir ./my-template.json 10 --dry-run
+pdf-extractor-finetune validate config.json ./training_dir "ft:gpt-3.5-turbo-1106:mycompany:my-model-name:id" ./my-template.json
+# Optional: Set error example limit
+pdf-extractor-finetune validate config.json ./training_dir "ft:gpt-3.5-turbo-1106:mycompany:my-model-name:id" ./my-template.json 10
 ```
-
-The validation command will:
-- Match JSON files with their corresponding PDFs
-- Run the model on each PDF
-- Compare with ground truth from JSON files
-- Calculate comprehensive metrics:
-  - Accuracy: Overall percentage of correct field extractions
-  - Precision: Percentage of extracted fields that are correct
-  - Recall: Percentage of actual fields that were found
-  - F1-score: Harmonic mean of precision and recall
-  - Field-level accuracies for each field type
-- Provide error examples up to specified limit
-- Show recommendations if any metrics fall below thresholds
-
-6. Pull approved data from excel into training json data
+6. Pull approved data from excel into training json data 
 ```bash
 pdf-extractor-finetune excel2training <config.json> <json_files_folder> <pdf_files_folder> <sharepoint_excel_shared_link>
 ```
-
 ### Training Data Structure
 
 Your training directory should contain PDF files and their corresponding JSON files with verified field extractions:
@@ -338,3 +322,4 @@ npx @mermaid-js/mermaid-cli -i workflow.mmd -o workflow.svg
 ## License
 
 MIT
+
