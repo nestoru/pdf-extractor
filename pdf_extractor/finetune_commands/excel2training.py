@@ -6,10 +6,11 @@ import pandas as pd
 import json
 from pdf_extractor.utils.logging import get_logger
 from pdf_extractor.sync_to_onedrive import (
-    format_value, load_config, get_access_token, 
-    get_drive_info, get_workbook_session, 
+    format_value, load_config, get_access_token,
+    get_drive_info, get_workbook_session,
     get_worksheet_data, close_workbook_session
 )
+from pdf_extractor.fine_tuning.data_processor import FineTuningDataProcessor
 
 logger = get_logger(__name__)
 
@@ -89,26 +90,34 @@ def excel2training_command(
         logger.info("Starting Excel to training data conversion...")
         print("\nProcessing SharePoint Excel file...")
 
+        # Initialize the data processor for extracting text from PDFs
+        data_processor = FineTuningDataProcessor()
+
         # Process Excel file
         excel_data = process_sharepoint_excel(config_path, sharepoint_link)
         print(f"Found {len(excel_data)} approved records")
 
         successful_conversions = 0
         skipped_files = 0
+        existing_files = 0
 
         # Process each approved row
         for idx, row in excel_data.iterrows():
-            if 'FILE NAME' not in row:
-                logger.warning("Row missing FILE NAME column, skipping")
+            if 'FILE NAME' not in row or pd.isna(row['FILE NAME']) or row['FILE NAME'] == '':
+                logger.warning("Row missing FILE NAME column or empty filename, skipping")
                 skipped_files += 1
                 continue
 
-            file_name = row['FILE NAME']
-            if not file_name.endswith('.pdf'):
+            # Get the file name and ensure it has the .pdf extension
+            file_name = str(row['FILE NAME']).strip()
+            if not file_name.lower().endswith('.pdf'):
                 file_name += '.pdf'
 
-            # Search for PDF file
-            pdf_files = list(pdf_folder_path.rglob(file_name))
+            # Search for PDF file - case insensitive search
+            pdf_files = []
+            for pdf_file in pdf_folder_path.rglob('*.pdf'):
+                if pdf_file.name.lower() == file_name.lower():
+                    pdf_files.append(pdf_file)
 
             if not pdf_files:
                 logger.warning(f"PDF file not found: {file_name}")
@@ -119,23 +128,44 @@ def excel2training_command(
                 logger.warning(f"Multiple matches found for {file_name}, using first match")
 
             pdf_path = pdf_files[0]
-
+            
             # Create corresponding JSON path
             rel_path = pdf_path.relative_to(pdf_folder_path)
             json_path = json_folder_path / rel_path.with_suffix('.json')
+            
+            # Skip if JSON file already exists
+            if json_path.exists():
+                logger.info(f"JSON file already exists: {json_path}, skipping creation")
+                existing_files += 1
+                continue
+            
+            # Extract text from PDF
+            try:
+                pdf_text = data_processor.extract_pdf_text(pdf_path)
+                if not pdf_text or pdf_text.strip() == '':
+                    logger.warning(f"PDF file is empty or text extraction failed: {pdf_path}")
+                    skipped_files += 1
+                    continue
+            except Exception as e:
+                logger.error(f"Error extracting text from PDF {pdf_path}: {str(e)}")
+                skipped_files += 1
+                continue
 
-            # Create JSON content with fields structure
+            # Create JSON content with fields structure and PDF content
             row_dict = row.to_dict()
             fields = []
             for key, value in row_dict.items():
-                if key != 'FILE NAME':  # Skip filename as it's not a field
+                if key != 'FILE NAME' and key != 'APPROVED':  # Skip filename and approved flag
                     formatted_value = format_value(str(value) if pd.notnull(value) else '')
-                    fields.append({
-                        "key": key,
-                        "value": formatted_value
-                    })
+                    if formatted_value.strip():  # Only include non-empty fields
+                        fields.append({
+                            "key": key,
+                            "value": formatted_value
+                        })
 
+            # Create full JSON structure with PDF content
             json_content = {
+                "pdf_content": pdf_text,
                 "fields": fields
             }
 
@@ -144,7 +174,7 @@ def excel2training_command(
 
             # Write JSON file
             with open(json_path, 'w', encoding='utf-8') as f:
-                json.dump(json_content, f, indent=2)
+                json.dump(json_content, f, indent=2, ensure_ascii=False)
 
             logger.info(f"Created JSON file: {json_path}")
             successful_conversions += 1
@@ -158,11 +188,14 @@ def excel2training_command(
         print("-" * 20)
         print(f"Total approved records: {len(excel_data)}")
         print(f"Successfully converted: {successful_conversions}")
-        print(f"Skipped files: {skipped_files}")
-        
-        if successful_conversions > 0:
+        print(f"Existing JSON files (skipped): {existing_files}")
+        print(f"Skipped files (errors/not found): {skipped_files}")
+
+        if successful_conversions > 0 or existing_files > 0:
             print("\n✓ Conversion completed successfully")
-            print(f"✓ Training data files created in: {json_folder}")
+            print(f"✓ Training data files available in: {json_folder}")
+            if successful_conversions > 0:
+                print("  Note: New JSON files include PDF text content for proper training.")
         else:
             print("\n⚠ No files were converted")
             sys.exit(1)

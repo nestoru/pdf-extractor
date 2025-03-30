@@ -1,3 +1,4 @@
+# pdf_extractor/sync_to_onedrive.py
 import os
 import json
 import requests
@@ -92,14 +93,14 @@ def add_worksheet_row(access_token: str, drive_id: str, file_id: str, session_id
     }
     response = requests.get(url, headers=headers)
     response.raise_for_status()
-    
+
     # Get the current range address and row count
     range_data = response.json()
     last_row = len(range_data['values'])
-    
+
     # Calculate the range for the new row
     new_row_range = f"A{last_row + 1}:{chr(65 + len(values) - 1)}{last_row + 1}"
-    
+
     # Use update range instead of add rows
     url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{file_id}/workbook/worksheets/Sheet1/range(address='{new_row_range}')"
     headers = {
@@ -107,11 +108,11 @@ def add_worksheet_row(access_token: str, drive_id: str, file_id: str, session_id
         "workbook-session-id": session_id,
         "Content-Type": "application/json"
     }
-    
+
     data = {
         "values": [values]
     }
-    
+
     response = requests.patch(url, headers=headers, json=data)
     response.raise_for_status()
     return response.json()
@@ -133,20 +134,41 @@ def process_json_files(input_folder: str, shared_link: str, access_token: str):
         session_id = get_workbook_session(access_token, drive_id, file_id)
         print("Successfully created workbook session")
 
+        # Get Excel data
         worksheet_data = get_worksheet_data(access_token, drive_id, file_id, session_id)
         headers = worksheet_data['values'][0]
+        existing_file_names = []
+        
+        # Create a list of files that are already in Excel
+        if len(worksheet_data['values']) > 1:
+            file_name_index = headers.index('FILE NAME')
+            for row in worksheet_data['values'][1:]:  # Skip header
+                if len(row) > file_name_index and row[file_name_index]:
+                    file_name = row[file_name_index]
+                    # Store both with and without .pdf extension for robust checking
+                    existing_file_names.append(file_name)
+                    if file_name.endswith('.pdf'):
+                        existing_file_names.append(file_name[:-4])
+                    else:
+                        existing_file_names.append(f"{file_name}.pdf")
+        
+        print(f"Found {len(existing_file_names) // 2} existing entries in Excel")
 
         for json_file in json_files:
             print(f"\nProcessing {json_file}")
-            
+
             try:
                 with open(json_file, 'r') as f:
                     data = json.load(f)
 
-                if data.get("synced") == "true":
-                    print(f"Skipping {json_file} - already synced")
+                # Check if file is already in Excel by name
+                file_already_in_excel = json_file.stem in existing_file_names or f"{json_file.stem}.pdf" in existing_file_names
+                
+                if file_already_in_excel:
+                    print(f"Skipping {json_file} - already exists in Excel")
                     continue
 
+                # Create row for Excel
                 row_values = [None] * len(headers)
                 row_values[headers.index('FILE NAME')] = json_file.stem
 
@@ -163,11 +185,6 @@ def process_json_files(input_folder: str, shared_link: str, access_token: str):
 
                 add_worksheet_row(access_token, drive_id, file_id, session_id, row_values)
                 print(f"Added row for {json_file.stem}")
-
-                data["synced"] = "true"
-                with open(json_file, 'w') as f:
-                    json.dump(data, f, indent=2)
-                print(f"Marked {json_file.stem} as synced")
                 successful_syncs += 1
 
             except Exception as e:
@@ -200,7 +217,7 @@ def main():
         config = load_config(config_path)
         access_token = get_access_token(config)
         successful_syncs = process_json_files(input_folder, shared_link, access_token)
-        
+
         if successful_syncs > 0:
             print(f"Sync completed successfully - {successful_syncs} files processed")
         else:

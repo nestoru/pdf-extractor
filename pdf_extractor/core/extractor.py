@@ -29,7 +29,7 @@ class PDFExtractor:
     ) -> None:
         """
         Process PDF document and save results.
-        
+
         Args:
             input_pdf_path: Path to input PDF
             template_path: Path to extraction template
@@ -54,6 +54,11 @@ class PDFExtractor:
 
         # Analyze with GPT
         analysis = self.gpt_service.analyze_document(text_content, template)
+        
+        # Log the analysis results
+        logger.info(f"GPT analysis returned {len(analysis.fields)} fields")
+        for field in analysis.fields:
+            logger.info(f"Analysis field: {field.key} = {field.value}")
 
         # For validation, we only need the extracted fields without positions
         if validation_mode:
@@ -66,11 +71,14 @@ class PDFExtractor:
                 )
                 for field in analysis.fields
             ]
+            logger.info(f"Created {len(extracted_fields)} extracted fields for validation mode")
         else:
             # Match fields with positions for annotation
             extracted_fields = []
             for field in analysis.fields:
                 field_value = str(field.value)
+                field_matched = False
+                
                 for pos in positions:
                     if field_value in pos['text']:
                         extracted_fields.append(
@@ -81,7 +89,23 @@ class PDFExtractor:
                                 bbox=pos['bbox']
                             )
                         )
+                        field_matched = True
+                        logger.info(f"Field matched with position: {field.key} = {field_value}")
                         break
+                
+                # If field wasn't matched with a position, add it without position data
+                if not field_matched:
+                    logger.warning(f"Field not matched with position: {field.key} = {field_value}")
+                    extracted_fields.append(
+                        ExtractedField(
+                            key=field.key,
+                            value=field_value,
+                            page=None,
+                            bbox=None
+                        )
+                    )
+            
+            logger.info(f"Created {len(extracted_fields)} extracted fields with position matching")
 
         # Create result
         result = ProcessingResult(
@@ -89,12 +113,14 @@ class PDFExtractor:
             extracted_fields=extracted_fields,
             text_content=text_content
         )
+        
+        logger.info(f"Created ProcessingResult with {len(result.extracted_fields)} fields")
 
         # Save results
         self._save_results(
-            result, 
-            input_pdf_path, 
-            output_pdf_path, 
+            result,
+            input_pdf_path,
+            output_pdf_path,
             extracted_json_path,
             validation_mode
         )
@@ -108,6 +134,11 @@ class PDFExtractor:
         validation_mode: bool = False
     ) -> None:
         """Save processing results to files."""
+        # Log the fields being saved to help troubleshoot
+        logger.info(f"Saving {len(result.extracted_fields)} extracted fields to {extracted_json_path}")
+        for field in result.extracted_fields:
+            logger.info(f"Field being saved: {field.key} = {field.value}")
+        
         # Save extracted data to JSON
         output_data = {
             'document_type': result.document_type,
@@ -117,6 +148,9 @@ class PDFExtractor:
             ],
             'text_content': result.text_content
         }
+        
+        logger.info(f"Final JSON has {len(output_data['fields'])} fields")
+        
         with open(extracted_json_path, 'w', encoding='utf-8') as f:
             json.dump(output_data, f, indent=2, ensure_ascii=False)
 

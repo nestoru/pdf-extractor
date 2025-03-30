@@ -2,6 +2,7 @@
 import sys
 from pathlib import Path
 from typing import Optional
+import json
 from pdf_extractor.utils.logging import get_logger
 from pdf_extractor.finetune_commands.train import train_command
 from pdf_extractor.finetune_commands.validate import validate_command
@@ -19,7 +20,7 @@ def print_usage():
     print("  pdf-extractor-finetune list-jobs <config.json> [limit]")
     print("  pdf-extractor-finetune status <config.json> <job_id>")
     print("  pdf-extractor-finetune train <config.json> "
-          "<openai_model_name> <json_files_folder> <pdf_files_folder> <custom_model_name> [--dry-run]")
+          "<openai_model_name> <json_files_folder> <custom_model_name> [--dry-run]")
     print("  pdf-extractor-finetune validate <config.json> "
           "<json_files_folder> <pdf_files_folder> <model_name> <template_path> [error_limit]")
     print("  pdf-extractor-finetune excel2training <config.json> "
@@ -55,18 +56,17 @@ def main():
             get_job_status_command(args[0], args[1])
 
         elif command == "train":
-            if len(args) not in [5, 6] or (len(args) == 6 and args[5] != '--dry-run'):
+            # Updated to remove pdf_files_folder parameter
+            if len(args) not in [4, 5] or (len(args) == 5 and args[4] != '--dry-run'):
                 print("Usage: pdf-extractor-finetune train <config.json> "
-                      "<openai_model_name> <json_files_folder> <pdf_files_folder> "
-                      "<custom_model_name> [--dry-run]")
+                      "<openai_model_name> <json_files_folder> <custom_model_name> [--dry-run]")
                 sys.exit(1)
-            dry_run = len(args) == 6 and args[5] == '--dry-run'
+            dry_run = len(args) == 5 and args[4] == '--dry-run'
             train_command(
                 config_path=args[0],
                 base_model_name=args[1],
                 json_folder=args[2],
-                pdf_folder=args[3],
-                custom_model_name=args[4],
+                custom_model_name=args[3],
                 dry_run=dry_run
             )
 
@@ -76,14 +76,14 @@ def main():
                       "<openai_model_name> <json_files_folder> <pdf_files_folder> "
                       "<template_path> [error_limit] [--dry-run]")
                 sys.exit(1)
-            
+
             # Check if error_limit or dry_run are provided
             dry_run = args[-1] == '--dry-run' if len(args) == 7 else False
             if dry_run:
                 error_limit = int(args[5]) if len(args) == 7 else 5
             else:
                 error_limit = int(args[5]) if len(args) == 6 else 5
-                
+
             validate_command(
                 config_path=args[0],
                 model_name=args[1],

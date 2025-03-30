@@ -2,78 +2,69 @@
 
 from pathlib import Path
 import json
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Set
 import logging
 from datetime import datetime
-import fitz  # PyMuPDF
+import shutil
 
 logger = logging.getLogger(__name__)
 
 class FineTuningDataProcessor:
     """
-    Processes data for fine-tuning OpenAI models with a 2-level caching system:
-      1) Each PDF+JSON pair -> one chunk training file in `.cache`
-      2) All chunks -> one .jsonl single training file (only rebuilt if chunks are newer)
+    Processes data for fine-tuning OpenAI models.
+    Works with JSON files that have embedded pdf_content.
+    No caching is used - always processes all files from scratch for reliability.
     """
-
-    @staticmethod
-    def extract_pdf_text(pdf_path: Path) -> str:
-        """Extract text content from a PDF file."""
-        text = ""
-        try:
-            with fitz.open(pdf_path) as doc:
-                for page in doc:
-                    text += page.get_text() + "\n"
-            return text.strip()
-        except Exception as e:
-            logger.error(f"Failed to extract text from {pdf_path}: {e}")
-            raise
-
-    def build_chunk_for_record(
+    
+    def process_json_file(
         self,
-        pdf_path: Path,
         json_path: Path,
-        cache_dir: Path
-    ) -> Optional[Path]:
+        field_keys: List[str] = None
+    ) -> Optional[Dict]:
         """
-        Builds or reuses a *training chunk* file (a small JSON) for a single PDF+JSON record.
+        Process a single JSON file with embedded pdf_content and return a training example.
         
-        Returns the path to `.cache/<stem>_training.json`, which contains:
-          {
-            "messages": [
-              {"role": "user", "content": "...pdf text..."},
-              {"role": "assistant", "content": "...fields..."}
-            ]
-          }
-        
-        (Caching #1): If .cache/<stem>_training.json is already newer than both the PDF and JSON,
-                      we reuse it; otherwise we rebuild.
+        Args:
+            json_path: Path to the JSON file with embedded pdf_content
+            field_keys: List of field keys to include in the prompt (required)
+            
+        Returns:
+            dict: A training example in the format expected by OpenAI's fine-tuning API,
+                  or None if processing failed
         """
-        cache_dir.mkdir(exist_ok=True)
-        chunk_path = cache_dir / f"{pdf_path.stem}_training.json"
-
-        # If chunk is already newer than PDF+JSON, reuse it
-        if chunk_path.exists():
-            chunk_mtime = chunk_path.stat().st_mtime
-            pdf_mtime = pdf_path.stat().st_mtime
-            json_mtime = json_path.stat().st_mtime
-            if chunk_mtime > max(pdf_mtime, json_mtime):
-                logger.info(f"Reusing chunk file '{chunk_path.name}' for '{pdf_path.name}'")
-                return chunk_path
-
-        # Otherwise, rebuild
-        logger.info(f"Building chunk file '{chunk_path.name}' for '{pdf_path.name}'")
         try:
-            pdf_text = self.extract_pdf_text(pdf_path)
+            # Load JSON data
             with open(json_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-
-            # Construct the single example in chat format
-            chunk_example = {
+            
+            # Verify pdf_content exists
+            if "pdf_content" not in data or not data["pdf_content"].strip():
+                logger.warning(f"JSON file missing or has empty pdf_content field: {json_path}")
+                return None
+                
+            # Extract the content and fields
+            user_content = data["pdf_content"]
+            
+            # Verify fields exist
+            if "fields" not in data or not data["fields"]:
+                logger.warning(f"JSON file missing or has empty fields: {json_path}")
+                return None
+            
+            # Create prompt with field keys (field keys are now required)
+            if field_keys and len(field_keys) > 0:
+                field_keys_str = ", ".join(field_keys)
+                user_prompt = f"Extract ONLY the following fields from this document and format as JSON. Required fields: {field_keys_str}.\n\n{user_content}"
+            else:
+                # Fallback, though this should not normally happen
+                logger.warning(f"No field keys provided for {json_path}, using generic prompt")
+                user_prompt = f"Extract the fields from this document and format as JSON:\n\n{user_content}"
+                
+            # Construct the training example in chat format
+            training_example = {
                 "messages": [
                     {
                         "role": "user",
-                        "content": f"Extract the fields from this document:\n\n{pdf_text}"
+                        "content": user_prompt
                     },
                     {
                         "role": "assistant",
@@ -82,116 +73,135 @@ class FineTuningDataProcessor:
                 ]
             }
 
-            # Save the chunk
-            with open(chunk_path, "w", encoding="utf-8") as cf:
-                json.dump(chunk_example, cf, indent=2)
-            return chunk_path
+            return training_example
 
         except Exception as e:
-            logger.error(f"Error creating chunk for {pdf_path.name}: {e}")
+            logger.error(f"Error processing JSON file {json_path}: {e}")
             return None
-
-    def _existing_single_file(self, training_dir: Path) -> Optional[Path]:
+        
+    def collect_field_keys(self, json_files: List[Path]) -> List[str]:
         """
-        Returns the existing single training .jsonl file if there is exactly one.
-        If multiple exist, we keep the newest and remove older ones. If none exist, returns None.
+        Collect all unique field keys from the JSON files.
+        
+        Args:
+            json_files: List of paths to JSON files
+            
+        Returns:
+            list: List of unique field keys
         """
-        single_files = sorted(training_dir.glob("training_*.jsonl"), key=lambda p: p.stat().st_mtime)
-        if not single_files:
-            return None
-        # If multiple, keep only the newest
-        for old_file in single_files[:-1]:
-            old_file.unlink()
-            logger.info(f"Removed older single training file: {old_file.name}")
-        return single_files[-1]
-
-    def _all_chunks_newer_than(self, single_file: Path, chunk_files: List[Path]) -> bool:
-        """
-        Checks if any chunk file is newer than `single_file`.
-        If so, we need to rebuild. If not, we can reuse `single_file`.
-        """
-        if not single_file.exists():
-            return True
-        single_mtime = single_file.stat().st_mtime
-        for c in chunk_files:
-            if c.stat().st_mtime > single_mtime:
-                return True
-        return False
-
-    def prepare_training_data(
+        all_keys = set()
+        
+        for json_file in json_files:
+            try:
+                with open(json_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                
+                if "fields" in data and data["fields"]:
+                    for field in data["fields"]:
+                        if "key" in field and field["key"]:
+                            all_keys.add(field["key"])
+            except Exception as e:
+                logger.error(f"Error extracting field keys from {json_file}: {e}")
+        
+        return sorted(list(all_keys))
+        
+    def prepare_training_data_from_jsons(
         self,
-        training_dir: Path
+        json_files: List[Path],
+        output_path: Path
     ) -> Tuple[List[Dict], Optional[Path]]:
         """
-        Orchestrates the 2-level caching:
-          1) For each PDF+JSON pair, build or reuse a chunk in `.cache/*.json`
-          2) Combine all chunk files into one .jsonl single file (only if needed)
-        
-        Returns (examples_list, single_file_path):
-          examples_list: The in-memory list of all chunk data
-          single_file_path: The final .jsonl file (or None if error)
+        Prepare training data from JSON files with embedded pdf_content.
+        Field keys will always be included in the prompts.
+
+        Args:
+            json_files: List of paths to JSON files with embedded pdf_content
+            output_path: Path to save the prepared training data
+            
+        Returns:
+            tuple: (list of training examples, path to the training file)
         """
-        training_dir = Path(training_dir)
-        cache_dir = training_dir / ".cache"
-        cache_dir.mkdir(exist_ok=True)
+        output_path = Path(output_path)
+        
+        # Clean up any existing training files with the same name pattern
+        self._cleanup_training_files(output_path)
+        
+        # Always collect field keys - this is now required
+        logger.info("Collecting unique field keys from JSON files...")
+        field_keys = self.collect_field_keys(json_files)
+        logger.info(f"Found {len(field_keys)} unique field keys: {', '.join(field_keys)}")
+        
+        if not field_keys:
+            logger.error("No field keys found in JSON files. Cannot create training data without field keys.")
+            return [], None
+        
+        # Process each JSON file
+        all_examples = []
+        processed_count = 0
+        skipped_count = 0
+        
+        for json_file in json_files:
+            example = self.process_json_file(json_file, field_keys)
+            if example:
+                all_examples.append(example)
+                processed_count += 1
+            else:
+                skipped_count += 1
 
-        # Step 1: Build or reuse chunk files for each PDF+JSON pair
-        chunk_paths = []
-        for pdf_path in training_dir.glob("*.pdf"):
-            json_path = pdf_path.with_suffix(".json")
-            if not json_path.exists():
-                logger.warning(f"No matching JSON file for {pdf_path.name}")
-                continue
-            chunk_file = self.build_chunk_for_record(pdf_path, json_path, cache_dir)
-            if chunk_file:
-                chunk_paths.append(chunk_file)
-
-        if not chunk_paths:
-            logger.error("No chunk files were created. Possibly no valid PDF+JSON pairs.")
+        logger.info(f"Processed {processed_count} JSON files, skipped {skipped_count} due to errors or missing required fields")
+        
+        if not all_examples:
+            logger.error("No valid training examples were created. Check your JSON files.")
             return [], None
 
-        # Step 2: Combine chunk files into a single .jsonl if needed
-        single_file = self._existing_single_file(training_dir)  # returns the newest .jsonl or None
-        if single_file and not self._all_chunks_newer_than(single_file, chunk_paths):
-            # Reuse existing single file
-            logger.info(f"Reusing single training file: {single_file.name}")
-            # Load it in memory
-            all_examples = []
-            with open(single_file, "r", encoding="utf-8") as sf:
-                for line in sf:
-                    if line.strip():
-                        all_examples.append(json.loads(line))
-            return all_examples, single_file
-        else:
-            # Build a new single file
-            all_examples = []
-            for cp in chunk_paths:
-                try:
-                    example = json.loads(cp.read_text(encoding="utf-8"))
-                    all_examples.append(example)
-                except Exception as e:
-                    logger.error(f"Failed to load chunk {cp.name}: {e}")
-
-            if not all_examples:
-                logger.error("All chunk files failed to load. Cannot build single file.")
-                return [], None
-
-            # If there's an old single file, remove it (so we end with only one)
-            if single_file and single_file.exists():
-                single_file.unlink()
-                logger.info(f"Removed older single file: {single_file.name}")
-
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            new_single = training_dir / f"training_{timestamp}.jsonl"
-            logger.info(f"Creating new single training file: {new_single.name} with {len(all_examples)} examples")
-
+        # Write the training file
+        return self._write_training_file(all_examples, output_path)
+    
+    def _write_training_file(
+        self,
+        examples: List[Dict],
+        output_path: Path
+    ) -> Tuple[List[Dict], Optional[Path]]:
+        """
+        Write training examples to a JSONL file.
+        
+        Args:
+            examples: List of training examples
+            output_path: Path to save the training file
+            
+        Returns:
+            tuple: (list of training examples, path to the training file)
+        """
+        try:
+            # Ensure parent directory exists
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            with open(output_path, "w", encoding="utf-8") as f:
+                for example in examples:
+                    f.write(json.dumps(example, ensure_ascii=False) + "\n")
+                    
+            logger.info(f"Created training file: {output_path} with {len(examples)} examples")
+            return examples, output_path
+            
+        except Exception as e:
+            logger.error(f"Failed to write training file '{output_path}': {e}")
+            return [], None
+            
+    def _cleanup_training_files(self, output_path: Path) -> None:
+        """
+        Clean up any existing training files with the same base name pattern.
+        This ensures we don't have multiple training files from previous runs.
+        
+        Args:
+            output_path: The target output path for the new training file
+        """
+        # Get the pattern to match (e.g., "training_*.jsonl")
+        pattern = f"{output_path.stem.split('_')[0]}_*.jsonl"
+        
+        # Find all matching files in the directory
+        for existing_file in output_path.parent.glob(pattern):
             try:
-                with open(new_single, "w", encoding="utf-8") as out_f:
-                    for ex in all_examples:
-                        out_f.write(json.dumps(ex, ensure_ascii=False) + "\n")
+                existing_file.unlink()
+                logger.info(f"Removed existing training file: {existing_file}")
             except Exception as e:
-                logger.error(f"Failed to write single training file '{new_single.name}': {e}")
-                return [], None
-
-            return all_examples, new_single
-
+                logger.warning(f"Could not remove existing file {existing_file}: {e}")
