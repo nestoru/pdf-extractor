@@ -26,7 +26,6 @@ flake8 = "^6.1.0"
 [tool.poetry.scripts]
 pdf-extractor = "pdf_extractor.cli:main"
 pdf-extractor-finetune = "pdf_extractor.cli_finetune:main"
-create-inference-template = "pdf_extractor.cli_template:main"
 sync-extracted-fields = "pdf_extractor.sync_to_onedrive:main"
 
 [build-system]

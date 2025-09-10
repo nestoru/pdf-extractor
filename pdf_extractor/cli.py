@@ -7,16 +7,21 @@ from pdf_extractor.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
-def validate_paths(config_path: str, fields_template_path: str, input_folder: str, output_folder: str) -> None:
+def validate_paths(config_path: str, sharepoint_url: str, input_folder: str, output_folder: str) -> None:
     """Validate all input and output paths."""
-    # Check input files exist
-    for path, desc in [
-        (config_path, "Configuration file"),
-        (fields_template_path, "Fields template file"),
-        (input_folder, "Input folder")
-    ]:
-        if not Path(path).exists():
-            raise FileNotFoundError(f"{desc} not found: {path}")
+    # Check config file exists
+    if not Path(config_path).exists():
+        raise FileNotFoundError(f"Configuration file not found: {config_path}")
+    
+    # Validate SharePoint URL format
+    if not (sharepoint_url.startswith('http') and 'sharepoint.com' in sharepoint_url):
+        raise ValueError(f"Invalid SharePoint URL format: {sharepoint_url}")
+    
+    logger.info(f"Extraction schema will be built from SharePoint: {sharepoint_url}")
+    
+    # Check input folder exists
+    if not Path(input_folder).exists():
+        raise FileNotFoundError(f"Input folder not found: {input_folder}")
     
     # Ensure output folder exists or create it
     Path(output_folder).mkdir(parents=True, exist_ok=True)
@@ -25,8 +30,8 @@ def process_pdf_file(
     extractor: PDFExtractor,
     input_pdf_path: Path,
     output_folder: Path,
-    fields_template_path: str,
-    input_folder: Path  # Add input_folder as a parameter
+    sharepoint_url: str,
+    input_folder: Path
 ) -> None:
     """Process a single PDF file."""
     # Define output paths
@@ -45,49 +50,52 @@ def process_pdf_file(
         logger.info(f"Skipping {input_pdf_path} as both output files already exist.")
         return
 
-    # Process the PDF
-    try:
-        logger.info(f"Processing {input_pdf_path}")
-        extractor.process_pdf(
-            input_pdf_path=str(input_pdf_path),
-            template_path=fields_template_path,
-            output_pdf_path=str(annotated_pdf_path),
-            extracted_json_path=str(extracted_json_path)
-        )
-        logger.info(f"Completed processing {input_pdf_path}")
-    except Exception as e:
-        logger.error(f"Error processing {input_pdf_path}: {str(e)}")
+    # Process the PDF - let exceptions propagate up
+    logger.info(f"Processing {input_pdf_path}")
+    extractor.process_pdf(
+        input_pdf_path=str(input_pdf_path),
+        sharepoint_url=sharepoint_url,
+        output_pdf_path=str(annotated_pdf_path),
+        extracted_json_path=str(extracted_json_path)
+    )
+    logger.info(f"Completed processing {input_pdf_path}")
 
 def main():
     """
-    New Usage:
-      pdf-extractor <config.json> <model_name> <fields_template.json> <input_folder> <output_folder>
-    - `config.json` is used ONLY for the API key (ml_engine.api_key).
-    - `model_name` can be a base model or a fine-tuned model ID (e.g. ft:...).
-    - `input_folder` is the directory containing PDF files to process.
-    - `output_folder` is where the processed files will be saved.
+    Usage:
+      pdf-extractor <config.json> <model_name> <sharepoint_url> <input_folder> <output_folder>
+    
+    - `config.json`: Configuration file with API keys and SharePoint credentials
+    - `model_name`: Base model or fine-tuned model ID (e.g. ft:...)
+    - `sharepoint_url`: SharePoint Excel URL containing extraction schema and data
+    - `input_folder`: Directory containing PDF files to process
+    - `output_folder`: Where the processed files will be saved
+    
+    Example:
+      pdf-extractor config.json ft:gpt-4o-mini "https://company.sharepoint.com/:x:/r/sites/..." input/ output/
     """
     try:
         if len(sys.argv) != 6:
-            print("Usage: pdf-extractor <config.json> <model_name> <fields_template.json> <input_folder> <output_folder>")
+            print("Usage: pdf-extractor <config.json> <model_name> <sharepoint_url> <input_folder> <output_folder>")
+            print("  sharepoint_url: SharePoint Excel URL containing extraction schema and data")
             sys.exit(1)
 
         config_path = sys.argv[1]
         model_name = sys.argv[2]
-        fields_template_path = sys.argv[3]
-        input_folder = sys.argv[4]  # Assign input_folder here
+        sharepoint_url = sys.argv[3]
+        input_folder = sys.argv[4]
         output_folder = sys.argv[5]
 
         # Validate paths
-        validate_paths(config_path, fields_template_path, input_folder, output_folder)
+        validate_paths(config_path, sharepoint_url, input_folder, output_folder)
 
-        # Load only the API key from config
+        # Load config
         config = ExtractionConfig.from_json(config_path)
-        api_key = config.ml_engine.api_key  # We do NOT read "model" from the config
+        api_key = config.ml_engine.api_key
         logger.debug(f"Using user-provided model: {model_name}")
 
-        # Create the PDFExtractor, passing in the API key and model name
-        extractor = PDFExtractor(api_key=api_key, model_name=model_name)
+        # Create the PDFExtractor with config path for SharePoint access
+        extractor = PDFExtractor(api_key=api_key, model_name=model_name, config_path=config_path)
 
         # Convert input_folder and output_folder to Path objects
         input_folder_path = Path(input_folder)
@@ -106,8 +114,8 @@ def main():
                 extractor=extractor,
                 input_pdf_path=pdf_file,
                 output_folder=output_folder_path,
-                fields_template_path=fields_template_path,
-                input_folder=input_folder_path  # Pass input_folder_path here
+                sharepoint_url=sharepoint_url,
+                input_folder=input_folder_path
             )
 
         logger.info("All PDF processing completed successfully")
