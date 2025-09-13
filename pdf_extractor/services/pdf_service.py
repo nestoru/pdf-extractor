@@ -1,3 +1,4 @@
+# pdf_extractor/services/pdf_service.py
 from pathlib import Path
 from typing import Tuple, List, Dict
 import fitz
@@ -81,6 +82,7 @@ class PDFService:
         """Create annotated PDF with highlights and field labels."""
         doc = fitz.open(input_path)
         try:
+            # First, extract positions from the document for matching
             positions = []
             for page in doc:
                 text_dict = page.get_text("dict")
@@ -96,29 +98,39 @@ class PDFService:
                                     'font_size': span['size']
                                 })
             
+            # Track which fields have been annotated to avoid duplicates
+            annotated_fields = set()
+            
             for field in fields:
                 try:
-                    page = doc[field.page]
+                    # Skip if this field has already been annotated
+                    field_identifier = f"{field.key}:{field.value}"
+                    if field_identifier in annotated_fields:
+                        logger.info(f"Skipping duplicate field: {field.key}")
+                        continue
                     
-                    # Find exact position for this value
-                    value_pos = PDFService.find_exact_value_position(
-                        [p for p in positions if p['page'] == field.page], 
-                        field.value
-                    )
-                    
-                    if value_pos:
-                        # Add highlight only for the value
-                        highlight = page.add_highlight_annot(value_pos['bbox'])
+                    # If field has page and bbox info, use it directly
+                    if field.page is not None and field.bbox is not None:
+                        page = doc[field.page]
+                        
+                        # Add highlight for the value
+                        highlight = page.add_highlight_annot(field.bbox)
                         highlight.set_colors(stroke=(1, 0.8, 0))  # Yellow highlight
                         highlight.set_opacity(0.5)  # Make highlight semi-transparent
                         highlight.update()
                         
                         # Position label directly below the value
-                        label_x = value_pos['bbox'][0]  # Align with start of value
-                        label_y = value_pos['bbox'][3] + 2  # Just below value
+                        label_x = field.bbox[0]  # Align with start of value
+                        label_y = field.bbox[3] + 2  # Just below value
+                        
+                        # Try to find the font size from positions
+                        value_font_size = 10  # Default font size
+                        for pos in positions:
+                            if pos['page'] == field.page and pos['bbox'] == field.bbox:
+                                value_font_size = pos['font_size']
+                                break
                         
                         # Calculate label font size as 1/4 of the value's font size
-                        value_font_size = value_pos['font_size']
                         label_font_size = value_font_size / 4
                         
                         # Add field label
@@ -128,12 +140,53 @@ class PDFService:
                             fontsize=label_font_size,
                             color=(0, 0, 1)  # Blue
                         )
+                        
+                        annotated_fields.add(field_identifier)
+                        logger.info(f"Annotated field with stored position: {field.key} = {field.value}")
+                    
+                    # If no position info, try to find it in the document
+                    elif field.value:
+                        # Try to find the value in the document
+                        value_pos = PDFService.find_exact_value_position(positions, field.value)
+                        
+                        if value_pos:
+                            page = doc[value_pos['page']]
+                            
+                            # Add highlight only for the value
+                            highlight = page.add_highlight_annot(value_pos['bbox'])
+                            highlight.set_colors(stroke=(1, 0.8, 0))  # Yellow highlight
+                            highlight.set_opacity(0.5)  # Make highlight semi-transparent
+                            highlight.update()
+                            
+                            # Position label directly below the value
+                            label_x = value_pos['bbox'][0]  # Align with start of value
+                            label_y = value_pos['bbox'][3] + 2  # Just below value
+                            
+                            # Calculate label font size as 1/4 of the value's font size
+                            value_font_size = value_pos['font_size']
+                            label_font_size = value_font_size / 4
+                            
+                            # Add field label
+                            page.insert_text(
+                                (label_x, label_y),
+                                field.key,
+                                fontsize=label_font_size,
+                                color=(0, 0, 1)  # Blue
+                            )
+                            
+                            annotated_fields.add(field_identifier)
+                            logger.info(f"Annotated field by finding position: {field.key} = {field.value}")
+                        else:
+                            logger.warning(f"Could not find position for field {field.key} with value '{field.value}'")
+                    else:
+                        logger.warning(f"Field {field.key} has no value to annotate")
                     
                 except Exception as e:
                     logger.warning(f"Error annotating field {field.key}: {str(e)}")
                     continue
             
             doc.save(output_path)
+            logger.info(f"Saved annotated PDF with {len(annotated_fields)} unique field annotations")
             
         finally:
             doc.close()

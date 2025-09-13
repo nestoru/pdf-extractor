@@ -198,6 +198,23 @@ def add_worksheet_row(access_token: str, drive_id: str, file_id: str, session_id
     response.raise_for_status()
     return response.json()
 
+def normalize_for_comparison(filename):
+    """
+    Normalize filename for duplicate detection.
+    Removes punctuation and converts to lowercase for comparison only.
+    """
+    # Convert to lowercase
+    normalized = filename.lower()
+    # Remove common punctuation that might differ
+    for char in [',', '.', '!', '?', ';', ':', '-', '_', '(', ')', '[', ']', '{', '}', "'", '"']:
+        normalized = normalized.replace(char, ' ')
+    # Replace multiple spaces with single space and strip
+    normalized = ' '.join(normalized.split())
+    # Remove .pdf extension if present
+    if normalized.endswith(' pdf'):
+        normalized = normalized[:-4].strip()
+    return normalized
+
 def process_json_files(input_folder: str, shared_link: str, access_token: str, config: dict):
     """Process JSON files and update Excel with new 3-row schema structure."""
 
@@ -225,6 +242,7 @@ def process_json_files(input_folder: str, shared_link: str, access_token: str, c
     print(f"\nFound {len(json_files)} JSON files to process")
 
     successful_syncs = 0
+    skipped_files = 0
     session_id = None
 
     try:
@@ -233,6 +251,7 @@ def process_json_files(input_folder: str, shared_link: str, access_token: str, c
 
         # Get Excel data
         worksheet_data = get_worksheet_data(access_token, drive_id, file_id, session_id)
+        print(f"[DEBUG] Excel has {len(worksheet_data["values"])} total rows (including headers)")
         
         # NEW: Handle the 3-row schema structure
         # Row 0: Alternative Column Names
@@ -246,67 +265,116 @@ def process_json_files(input_folder: str, shared_link: str, access_token: str, c
         # Headers are now in row 3 (index 2)
         headers = worksheet_data['values'][2]
         
-        # Use headers exactly as they are - no cleaning
-        existing_file_names = []
+        # CRITICAL: Initialize fresh sets every time
+        existing_file_names_exact = set()
+        existing_file_names_normalized = dict()
+        # Two sets: one for exact names, one for normalized comparison
+        existing_file_names_exact = set()
+        existing_file_names_normalized = {}  # Maps normalized -> original
 
         # Data starts from row 4 (index 3)
         if len(worksheet_data['values']) > 3:
-            file_name_index = headers.index('FILE NAME')
-            for row in worksheet_data['values'][3:]:  # Skip the 3 schema rows
+            try:
+                file_name_index = headers.index('FILE NAME')
+            except ValueError:
+                raise ValueError("'FILE NAME' column not found in Excel headers")
+                
+            for row_idx, row in enumerate(worksheet_data['values'][3:], start=4):  # Skip the 3 schema rows
                 if len(row) > file_name_index and row[file_name_index]:
-                    file_name = row[file_name_index]
-                    # Store both with and without .pdf extension for robust checking
-                    existing_file_names.append(file_name)
-                    if file_name.endswith('.pdf'):
-                        existing_file_names.append(file_name[:-4])
-                    else:
-                        existing_file_names.append(f"{file_name}.pdf")
+                    file_name = str(row[file_name_index]).strip()
+                    if file_name:  # Only add non-empty filenames
+                        # Store exact name
+                        existing_file_names_exact.add(file_name)
+                        # Store normalized version for comparison
+                        normalized = normalize_for_comparison(file_name)
+                        existing_file_names_normalized[normalized] = file_name
+                        print(f"[EXISTING_FOUND] Row {row_idx}: exact='{file_name}' normalized='{normalized}'")
 
-        print(f"Found {len(existing_file_names) // 2} existing entries in Excel (starting from row 4)")
+        print(f"\n[EXISTING_SUMMARY] Found {len(existing_file_names_exact)} unique existing entries in Excel")
         
         # Calculate the next row number for new data (accounting for 3 schema rows)
         next_row_number = max(4, len(worksheet_data['values']) + 1)  # Start at row 4 minimum
 
         for json_file in json_files:
-            print(f"\nProcessing {json_file}")
+            print(f"\n[PROCESSING] {json_file.name}")
 
             try:
                 with open(json_file, 'r') as f:
                     data = json.load(f)
 
-                # Check if file is already in Excel by name
-                file_already_in_excel = json_file.stem in existing_file_names or f"{json_file.stem}.pdf" in existing_file_names
+                # Get the filename without extension - this is what we'll store
+                json_filename = json_file.stem
+                json_filename_normalized = normalize_for_comparison(json_filename)
+                
+                print(f"[FILENAME_CHECK] exact='{json_filename}' normalized='{json_filename_normalized}'")
+                
+                # Check for duplicates using normalized comparison
+                file_already_in_excel = False
+                matching_entry = None
+                
+                # First check exact match
+                if json_filename in existing_file_names_exact:
+                    file_already_in_excel = True
+                    matching_entry = json_filename
+                    print(f"[DUPLICATE_EXACT] Found exact match: '{json_filename}'")
+                # Then check normalized match
+                elif json_filename_normalized in existing_file_names_normalized:
+                    file_already_in_excel = True
+                    matching_entry = existing_file_names_normalized[json_filename_normalized]
+                    print(f"[DUPLICATE_NORMALIZED] Found normalized match: new='{json_filename}' existing='{matching_entry}'")
 
                 if file_already_in_excel:
-                    print(f"Skipping {json_file} - already exists in Excel")
+                    print(f"[SKIPPING] {json_filename} matches existing entry '{matching_entry}'")
+                    skipped_files += 1
                     continue
+
+                print(f"[NEW_FILE] {json_filename} - adding to Excel")
 
                 # Create row for Excel using headers exactly as they are
                 row_values = [None] * len(headers)
-                row_values[headers.index('FILE NAME')] = json_file.stem
+                
+                # Store the EXACT filename as it appears (without .json extension)
+                try:
+                    file_name_col_index = headers.index('FILE NAME')
+                    row_values[file_name_col_index] = json_filename
+                    print(f"[STORING_NAME] Will store exact name: '{json_filename}'")
+                except ValueError:
+                    print(f"[ERROR] 'FILE NAME' column not found, cannot proceed")
+                    continue
 
                 for field in data.get('fields', []):
-                    key, value = field['key'], field['value']
+                    # Extract key and value (ignore coordinates and other metadata for SharePoint)
+                    key = field.get('key')
+                    value = field.get('value')
+                    
+                    if not key or value is None:
+                        continue
                     
                     # Try to find the key directly in headers (exact match)
                     if key in headers:
                         formatted_value = format_value(value)
                         row_values[headers.index(key)] = formatted_value
-                        print(f"Formatted value for {key}: {value} -> {formatted_value}")
                     else:
-                        print(f"Warning: Field '{key}' not found in headers")
+                        print(f"[FIELD_WARNING] Field '{key}' not found in headers")
 
                 # Replace None values with empty strings
                 row_values = ['' if v is None else v for v in row_values]
-                print("New row to be added at row", next_row_number, ":", dict(zip(headers, row_values)))
+                
+                # Log what we're about to add
+                print(f"[ADDING_ROW] Row {next_row_number}: FILE NAME='{row_values[file_name_col_index]}'")
 
                 add_worksheet_row(access_token, drive_id, file_id, session_id, row_values, next_row_number)
-                print(f"Added row for {json_file.stem} at row {next_row_number}")
+                print(f"[SUCCESS] Added {json_filename} at row {next_row_number}")
+                
+                # Add to our tracking sets to prevent duplicates in this run
+                existing_file_names_exact.add(json_filename)
+                existing_file_names_normalized[json_filename_normalized] = json_filename
+                
                 next_row_number += 1
                 successful_syncs += 1
 
             except Exception as e:
-                print(f"Error processing {json_file}: {str(e)}")
+                print(f"[ERROR] Processing {json_file.name}: {str(e)}")
                 continue
 
     finally:
@@ -318,6 +386,8 @@ def process_json_files(input_folder: str, shared_link: str, access_token: str, c
             except Exception as e:
                 print(f"Error closing session: {str(e)}")
 
+    print(f"\n[SUMMARY] Processed: {successful_syncs}, Skipped: {skipped_files}, Total: {len(json_files)}")
+    
     return successful_syncs
 
 def main():

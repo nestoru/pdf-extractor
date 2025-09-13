@@ -13,6 +13,7 @@ from pdf_extractor.sync_to_onedrive import (
     get_worksheet_data, close_workbook_session
 )
 from pdf_extractor.fine_tuning.data_processor import FineTuningDataProcessor
+from pdf_extractor.services.pdf_service import PDFService
 
 logger = get_logger(__name__)
 
@@ -110,6 +111,7 @@ def process_sharepoint_excel(config_path: str, sharepoint_link: str) -> pd.DataF
                 raise ValueError("Excel file does not have the expected structure (need at least 3 schema rows + 1 data row)")
 
             # Row 3 (index 2) contains the actual headers
+            logger.info(f"Raw row 3 (headers): {worksheet_data['values'][2]}")
             headers = worksheet_data['values'][2]
             
             # Data starts from row 4 (index 3)
@@ -119,6 +121,21 @@ def process_sharepoint_excel(config_path: str, sharepoint_link: str) -> pd.DataF
             df = pd.DataFrame(data, columns=headers)
             
             logger.info(f"Loaded Excel with {len(df)} data rows (starting from row 4)")
+            
+            # Debug column information
+            logger.info(f"Total columns: {len(df.columns)}")
+            logger.info(f"Column names: {list(df.columns)}")
+            logger.info(f"Last 5 columns: {list(df.columns[-5:])}")
+            
+            # Check if APPROVED is in columns
+            if 'APPROVED' in df.columns:
+                logger.info("APPROVED column found!")
+                # Show sample values
+                logger.info(f"First 10 APPROVED values: {df['APPROVED'].head(10).tolist()}")
+                logger.info(f"Non-null APPROVED count: {df['APPROVED'].notna().sum()}")
+                logger.info(f"Unique APPROVED values: {df['APPROVED'].dropna().unique().tolist()}")
+            else:
+                logger.warning(f"APPROVED not found in columns. Available: {list(df.columns)}")
 
             # Check if APPROVED column exists
             if 'APPROVED' not in df.columns:
@@ -202,10 +219,24 @@ def excel2training_command(
 
             # Search for PDF file - case insensitive search for both filename and extension
             pdf_files = []
+            logger.info(f"Searching for PDF: {file_name}")
+            
+            # First, list all PDFs to see what's available
+            all_pdfs = list(pdf_folder_path.rglob('*.pdf')) + list(pdf_folder_path.rglob('*.PDF'))
+            if len(all_pdfs) < 20:  # Only log if reasonable number
+                logger.info(f"Available PDFs: {[p.name for p in all_pdfs]}")
+            else:
+                logger.info(f"Found {len(all_pdfs)} PDF files in folder")
+                
             for pdf_file in pdf_folder_path.rglob('*'):
                 # Check if it's a PDF file (case insensitive extension check)
-                if pdf_file.suffix.lower() == '.pdf' and pdf_file.name.lower() == file_name.lower():
-                    pdf_files.append(pdf_file)
+                if pdf_file.suffix.lower() == '.pdf':
+                    if pdf_file.name.lower() == file_name.lower():
+                        pdf_files.append(pdf_file)
+                        logger.info(f"Exact match found: {pdf_file.name}")
+                    elif pdf_file.stem.lower() == file_name[:-4].lower():  # Match without extension
+                        pdf_files.append(pdf_file)
+                        logger.info(f"Stem match found: {pdf_file.name}")
 
             if not pdf_files:
                 reason = f"PDF file not found in folder: {pdf_folder}"
@@ -232,10 +263,13 @@ def excel2training_command(
                 existing_files += 1
                 continue
 
-            # Extract text from PDF
+            # Extract text from PDF with coordinates for training
             try:
-                pdf_text = data_processor.extract_pdf_text(pdf_path)
-                if not pdf_text or pdf_text.strip() == '':
+                # Use PDFService to get text with positions
+                pdf_service = PDFService()
+                text_content, positions = pdf_service.extract_text_and_positions(str(pdf_path))
+                
+                if not text_content or text_content.strip() == '':
                     reason = "PDF file is empty or text extraction failed"
                     logger.warning(f"PDF file is empty or text extraction failed: {pdf_path}")
                     skipped_files_list.append({
@@ -244,6 +278,45 @@ def excel2training_command(
                     })
                     skipped_files += 1
                     continue
+                
+                # Create coordinate-embedded text for training
+                pages_lines = {}
+                for pos in positions:
+                    page = pos['page']
+                    if page not in pages_lines:
+                        pages_lines[page] = {}
+                    
+                    # Group by approximate Y position (line)
+                    y_pos = round(pos['bbox'][1], 0)
+                    if y_pos not in pages_lines[page]:
+                        pages_lines[page][y_pos] = []
+                    
+                    if pos['text'].strip():
+                        # Format: [text]<@page:X,Y,X2,Y2>
+                        coord_marker = f"[{pos['text']}]<@{page}:{pos['bbox'][0]:.1f},{pos['bbox'][1]:.1f},{pos['bbox'][2]:.1f},{pos['bbox'][3]:.1f}>"
+                        pages_lines[page][y_pos].append((pos['bbox'][0], coord_marker))
+                
+                # Build the coordinate-embedded document
+                embedded_parts = []
+                embedded_parts.append("=== DOCUMENT WITH COORDINATE MARKERS ===")
+                embedded_parts.append("Format: [text]<@page:x1,y1,x2,y2>")
+                embedded_parts.append("")
+                
+                for page in sorted(pages_lines.keys()):
+                    embedded_parts.append(f"--- PAGE {page + 1} ---")
+                    for y_pos in sorted(pages_lines[page].keys()):
+                        line_spans = sorted(pages_lines[page][y_pos], key=lambda x: x[0])
+                        line_text = " ".join([span[1] for span in line_spans])
+                        embedded_parts.append(line_text)
+                    embedded_parts.append("")
+                
+                embedded_parts.append("=== END DOCUMENT ===")
+                
+                # Use coordinate-embedded text for training
+                pdf_text = "\n".join(embedded_parts)
+                
+                logger.info(f"Created coordinate-embedded text with {len(positions)} position markers")
+                
             except Exception as e:
                 reason = f"Error extracting text from PDF: {str(e)}"
                 logger.error(f"Error extracting text from PDF {pdf_path}: {str(e)}")
@@ -308,7 +381,8 @@ def excel2training_command(
             print("✓ Conversion completed successfully")
             print(f"✓ Training data files available in: {json_folder}")
             if successful_conversions > 0:
-                print("  Note: New JSON files include PDF text content for proper training.")
+                print("  Note: New JSON files include coordinate-embedded PDF text for spatial-aware training.")
+                print("  Note: Text format includes [text]<@page:x,y,x2,y2> markers for each text span.")
                 print("  Note: Field keys preserve Excel column names exactly (including type annotations)")
         else:
             print("\n⚠ No files were converted")
